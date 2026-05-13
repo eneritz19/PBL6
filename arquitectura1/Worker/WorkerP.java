@@ -4,37 +4,26 @@ import java.io.IOException;
 import java.util.Scanner;
 import java.util.concurrent.TimeoutException;
 
-import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
+import com.rabbitmq.client.AMQP;
 
 /**
- * WorkerP - Clasificador de transporte público: Bus / Tren / Ez P.
+ * WorkerP - Clasificador: Bus / Tren / Ez P.
  *
- * Flujo:
- *   Q: publikoa ← EXCHANGE_FANOUT → clasifica → publica a Q: emaitza
+ * Solo publica a Q:emaitza si la clasificación es positiva (BUS o TREN).
  *
- * Criterio de clasificación (velocidad media):
- *   - media entre 15 y 60 km/h  Y  distantzia < 20  →  BUS
- *     (velocidad moderada, paradas frecuentes → poca variación)
- *   - media entre 60 y 200 km/h  Y  distantzia < 30  →  TREN
- *     (velocidad alta, recorrido regular → variación baja)
- *   - en caso contrario                               →  EZ_P
- *
- * Formato mensaje entrada:  "sensorId media max min distantzia lat lon"
- * Formato mensaje salida:   "sensorId BUS|TREN|EZ_P lat lon"
+ * Formato entrada:  "userId empresaId media max min distantzia lat lon timestamp"
+ * Formato salida:   "userId empresaId BUS|TREN lat lon timestamp"
  */
 public class WorkerP {
 
-    // Umbrales para Bus
-    static final double BUS_VEL_MIN  = 15.0;
-    static final double BUS_VEL_MAX  = 60.0;
-    static final double BUS_DIST_MAX = 20.0;
-
-    // Umbrales para Tren
+    static final double BUS_VEL_MIN   = 15.0;
+    static final double BUS_VEL_MAX   = 60.0;
+    static final double BUS_DIST_MAX  = 20.0;
     static final double TREN_VEL_MIN  = 60.0;
     static final double TREN_VEL_MAX  = 200.0;
     static final double TREN_DIST_MAX = 30.0;
@@ -54,8 +43,8 @@ public class WorkerP {
         try (Connection connection = factory.newConnection()) {
             Channel channel = connection.createChannel();
 
-            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_FANOUT,  "fanout");
-            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_EMAITZA, "direct");
+            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_FANOUT,  "fanout", true);
+            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_EMAITZA, "direct", true);
 
             channel.queueDeclare(KafkaStreamConfig.QUEUE_PUBLIKO, true, false, false, null);
             channel.queueBind(KafkaStreamConfig.QUEUE_PUBLIKO, KafkaStreamConfig.EXCHANGE_FANOUT, "");
@@ -67,8 +56,7 @@ public class WorkerP {
             channel.basicQos(1);
             channel.basicConsume(KafkaStreamConfig.QUEUE_PUBLIKO, false, new MiConsumer(channel));
 
-            System.out.println("[WorkerP-" + workerId + "] Esperando mensajes en Q:publikoa...");
-
+            System.out.println("[WorkerP-" + workerId + "] Esperando en Q:publikoa...");
             synchronized (this) {
                 try { wait(); } catch (InterruptedException e) { e.printStackTrace(); }
             }
@@ -93,33 +81,38 @@ public class WorkerP {
             System.out.println("[WorkerP-" + workerId + "] Recibido: " + mensaje);
 
             String[] p = mensaje.split(" ");
-            if (p.length < 7) {
+            if (p.length < 9) {
                 getChannel().basicAck(envelope.getDeliveryTag(), false);
                 return;
             }
 
-            String sensorId   = p[0];
-            double media      = Double.parseDouble(p[1]);
-            double distantzia = Double.parseDouble(p[4]);
-            String lat        = p[5];
-            String lon        = p[6];
+            int    userId    = Integer.parseInt(p[0]);
+            int    empresaId = Integer.parseInt(p[1]);
+            double media      = Double.parseDouble(p[2]);
+            double distantzia = Double.parseDouble(p[5]);
+            String lat        = p[6];
+            String lon        = p[7];
+            String timestamp  = p[8];
 
-            String clasificacion;
+            String clasificacion = null;
             if (media >= BUS_VEL_MIN && media <= BUS_VEL_MAX && distantzia < BUS_DIST_MAX) {
                 clasificacion = "BUS";
             } else if (media > TREN_VEL_MIN && media <= TREN_VEL_MAX && distantzia < TREN_DIST_MAX) {
                 clasificacion = "TREN";
-            } else {
-                clasificacion = "EZ_P";
             }
 
-            String resultado = sensorId + " " + clasificacion + " " + lat + " " + lon;
+            System.out.println("[WorkerP-" + workerId + "] userId=" + userId +
+                    " media=" + media + " dist=" + distantzia +
+                    " → " + (clasificacion != null ? clasificacion + " ✓" : "EZ_P (no publica)"));
 
-            getChannel().basicPublish(KafkaStreamConfig.EXCHANGE_EMAITZA,
-                                      KafkaStreamConfig.QUEUE_EMAITZA,
-                                      null, resultado.getBytes());
+            if (clasificacion != null) {
+                String resultado = userId + " " + empresaId + " " + clasificacion + " " + lat + " " + lon + " " + timestamp;
+                getChannel().basicPublish(KafkaStreamConfig.EXCHANGE_EMAITZA,
+                                          KafkaStreamConfig.QUEUE_EMAITZA,
+                                          null, resultado.getBytes());
+                System.out.println("[WorkerP-" + workerId + "] → emaitza: " + resultado);
+            }
 
-            System.out.println("[WorkerP-" + workerId + "] Clasificado → " + resultado);
             getChannel().basicAck(envelope.getDeliveryTag(), false);
         }
     }
@@ -129,13 +122,8 @@ public class WorkerP {
         System.out.print("ID de este WorkerP: ");
         String id = teclado.nextLine();
         System.out.println("Pulsa ENTER para parar.");
-
         WorkerP worker = new WorkerP(id);
-        new Thread(() -> {
-            teclado.nextLine();
-            worker.parar();
-        }).start();
-
+        new Thread(() -> { teclado.nextLine(); worker.parar(); }).start();
         worker.suscribir();
         teclado.close();
     }

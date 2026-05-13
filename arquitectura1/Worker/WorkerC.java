@@ -12,22 +12,19 @@ import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
 
 /**
- * WorkerC - Clasificador de transporte: Kotxea / Ez kotxe (Coche / No coche).
+ * WorkerC - Clasificador: Kotxea / Ez kotxe.
  *
- * Flujo:
- *   Q: kotxea ← EXCHANGE_FANOUT → clasifica → publica a Q: emaitza
+ * Solo publica a Q:emaitza si la clasificación es positiva (KOTXEA).
+ * Esto evita que los 3 workers inunden la cola con resultados negativos
+ * duplicados para el mismo mensaje.
  *
- * Criterio de clasificación por velocidad media:
- *   - media > 30 km/h  Y  distantzia > 5  →  KOTXEA  (coche: velocidad alta y variable)
- *   - en caso contrario                   →  EZ_KOTXE
- *
- * Formato mensaje entrada:  "sensorId media max min distantzia lat lon"
- * Formato mensaje salida:   "sensorId KOTXEA lat lon"  /  "sensorId EZ_KOTXE lat lon"
+ * Formato entrada:  "userId empresaId media max min distantzia lat lon timestamp"
+ * Formato salida:   "userId empresaId KOTXEA lat lon timestamp"
  */
 public class WorkerC {
 
-    static final double UMBRAL_VELOCIDAD_KOTXE = 30.0;
-    static final double UMBRAL_DISTANTZIA_KOTXE = 5.0;
+    static final double UMBRAL_VEL  = 30.0;
+    static final double UMBRAL_DIST = 5.0;
 
     ConnectionFactory factory;
     String workerId;
@@ -44,11 +41,10 @@ public class WorkerC {
         try (Connection connection = factory.newConnection()) {
             Channel channel = connection.createChannel();
 
-            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_FANOUT,  "fanout");
-            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_EMAITZA, "direct");
+            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_FANOUT,  "fanout", true);
+            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_EMAITZA, "direct", true);
 
-            // Cola exclusiva ligada al fanout
-            channel.queueDeclare(KafkaStreamConfig.QUEUE_KOTXEA, true, false, false, null);
+            channel.queueDeclare(KafkaStreamConfig.QUEUE_KOTXEA,  true, false, false, null);
             channel.queueBind(KafkaStreamConfig.QUEUE_KOTXEA, KafkaStreamConfig.EXCHANGE_FANOUT, "");
 
             channel.queueDeclare(KafkaStreamConfig.QUEUE_EMAITZA, true, false, false, null);
@@ -58,8 +54,7 @@ public class WorkerC {
             channel.basicQos(1);
             channel.basicConsume(KafkaStreamConfig.QUEUE_KOTXEA, false, new MiConsumer(channel));
 
-            System.out.println("[WorkerC-" + workerId + "] Esperando mensajes en Q:kotxea...");
-
+            System.out.println("[WorkerC-" + workerId + "] Esperando en Q:kotxea...");
             synchronized (this) {
                 try { wait(); } catch (InterruptedException e) { e.printStackTrace(); }
             }
@@ -83,30 +78,36 @@ public class WorkerC {
             String mensaje = new String(body, "UTF-8");
             System.out.println("[WorkerC-" + workerId + "] Recibido: " + mensaje);
 
-            // Parsear: sensorId media max min distantzia lat lon
+            // Formato: "userId empresaId media max min distantzia lat lon timestamp"
             String[] p = mensaje.split(" ");
-            if (p.length < 7) {
+            if (p.length < 9) {
                 getChannel().basicAck(envelope.getDeliveryTag(), false);
                 return;
             }
 
-            String sensorId   = p[0];
-            double media      = Double.parseDouble(p[1]);
-            double distantzia = Double.parseDouble(p[4]);
-            String lat        = p[5];
-            String lon        = p[6];
+            int    userId    = Integer.parseInt(p[0]);
+            int    empresaId = Integer.parseInt(p[1]);
+            double media      = Double.parseDouble(p[2]);
+            double distantzia = Double.parseDouble(p[5]);
+            String lat        = p[6];
+            String lon        = p[7];
+            String timestamp  = p[8];
 
-            // Clasificación: velocidad alta y variación alta → coche
-            String clasificacion = (media > UMBRAL_VELOCIDAD_KOTXE && distantzia > UMBRAL_DISTANTZIA_KOTXE)
-                    ? "KOTXEA" : "EZ_KOTXE";
+            boolean esKotxea = media > UMBRAL_VEL && distantzia > UMBRAL_DIST;
 
-            String resultado = sensorId + " " + clasificacion + " " + lat + " " + lon;
+            System.out.println("[WorkerC-" + workerId + "] userId=" + userId +
+                    " media=" + media + " dist=" + distantzia +
+                    " → " + (esKotxea ? "KOTXEA ✓" : "EZ_KOTXE (no publica)"));
 
-            getChannel().basicPublish(KafkaStreamConfig.EXCHANGE_EMAITZA,
-                                      KafkaStreamConfig.QUEUE_EMAITZA,
-                                      null, resultado.getBytes());
+            // Solo publica si la clasificación es positiva
+            if (esKotxea) {
+                String resultado = userId + " " + empresaId + " KOTXEA " + lat + " " + lon + " " + timestamp;
+                getChannel().basicPublish(KafkaStreamConfig.EXCHANGE_EMAITZA,
+                                          KafkaStreamConfig.QUEUE_EMAITZA,
+                                          null, resultado.getBytes());
+                System.out.println("[WorkerC-" + workerId + "] → emaitza: " + resultado);
+            }
 
-            System.out.println("[WorkerC-" + workerId + "] Clasificado → " + resultado);
             getChannel().basicAck(envelope.getDeliveryTag(), false);
         }
     }
@@ -116,13 +117,8 @@ public class WorkerC {
         System.out.print("ID de este WorkerC: ");
         String id = teclado.nextLine();
         System.out.println("Pulsa ENTER para parar.");
-
         WorkerC worker = new WorkerC(id);
-        new Thread(() -> {
-            teclado.nextLine();
-            worker.parar();
-        }).start();
-
+        new Thread(() -> { teclado.nextLine(); worker.parar(); }).start();
         worker.suscribir();
         teclado.close();
     }

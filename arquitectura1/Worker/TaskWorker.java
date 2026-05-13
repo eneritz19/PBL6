@@ -12,16 +12,13 @@ import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
 
 /**
- * TaskWorker - Consumidor de la cola "tarea" (Thread Pool 1, 2 o 3).
+ * TaskWorker - Consumidor de Q:tarea (Thread Pool 1/2/3).
  *
  * Flujo:
  *   Q: tarea → calcula media/max/min/distantzia → publica al EXCHANGE_FANOUT
  *
- * Varias instancias de este worker compiten por los mensajes de Q: tarea
- * (RabbitMQ round-robin), simulando el Thread Pool del diagrama.
- *
- * Formato mensaje entrada:  "sensorId lat lon velocidad"
- * Formato mensaje salida:   "sensorId media max min distantzia lat lon"
+ * Formato mensaje entrada:  "userId empresaId lat lon velocidad"
+ * Formato mensaje salida:   "userId empresaId media max min distantzia lat lon timestamp"
  */
 public class TaskWorker {
 
@@ -30,33 +27,29 @@ public class TaskWorker {
     String workerId;
 
     public TaskWorker(String workerId) {
-        this.workerId = workerId;
-        factory = new ConnectionFactory();
+        this.workerId   = workerId;
+        factory         = new ConnectionFactory();
         factory.setHost("localhost");
         factory.setUsername("guest");
         factory.setPassword("guest");
-        gestorDatos = new GestorDatos();
+        gestorDatos     = new GestorDatos();
     }
 
     public void suscribir() {
         try (Connection connection = factory.newConnection()) {
             Channel channel = connection.createChannel();
 
-            // Asegurar que los exchanges/colas existen
-            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_STREAM,  "direct");
-            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_FANOUT,  "fanout");
+            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_STREAM, "direct", true);
+            channel.exchangeDeclare(KafkaStreamConfig.EXCHANGE_FANOUT, "fanout", true);
             channel.queueDeclare(KafkaStreamConfig.QUEUE_TAREA, true, false, false, null);
             channel.queueBind(KafkaStreamConfig.QUEUE_TAREA,
                               KafkaStreamConfig.EXCHANGE_STREAM,
                               KafkaStreamConfig.QUEUE_TAREA);
 
-            // prefetchCount=1: el worker sólo recibe 1 mensaje a la vez (fair dispatch)
-            channel.basicQos(1);
+            channel.basicQos(1); // fair dispatch: un mensaje a la vez
+            channel.basicConsume(KafkaStreamConfig.QUEUE_TAREA, false, new MiConsumer(channel));
 
-            MiConsumer consumer = new MiConsumer(channel);
-            channel.basicConsume(KafkaStreamConfig.QUEUE_TAREA, false, consumer);
-
-            System.out.println("[TaskWorker-" + workerId + "] Esperando tareas...");
+            System.out.println("[TaskWorker-" + workerId + "] Esperando tareas en Q:tarea...");
 
             synchronized (this) {
                 try { wait(); } catch (InterruptedException e) { e.printStackTrace(); }
@@ -72,9 +65,7 @@ public class TaskWorker {
 
     public class MiConsumer extends DefaultConsumer {
 
-        public MiConsumer(Channel channel) {
-            super(channel);
-        }
+        public MiConsumer(Channel channel) { super(channel); }
 
         @Override
         public void handleDelivery(String consumerTag, Envelope envelope,
@@ -83,34 +74,38 @@ public class TaskWorker {
             String mensaje = new String(body, "UTF-8");
             System.out.println("[TaskWorker-" + workerId + "] Recibido: " + mensaje);
 
-            // Parsear: sensorId lat lon velocidad
-            String[] partes = mensaje.split(" ");
-            if (partes.length < 4) {
+            // Formato: "userId empresaId lat lon velocidad"
+            String[] p = mensaje.split(" ");
+            if (p.length < 5) {
+                System.err.println("[TaskWorker-" + workerId + "] Mensaje malformado, ignorado: " + mensaje);
                 getChannel().basicAck(envelope.getDeliveryTag(), false);
                 return;
             }
 
-            String sensorId  = partes[0];
-            String lat       = partes[1];
-            String lon       = partes[2];
-            double velocidad = Double.parseDouble(partes[3]);
+            int    userId    = Integer.parseInt(p[0]);
+            int    empresaId = Integer.parseInt(p[1]);
+            double lat       = Double.parseDouble(p[2]);
+            double lon       = Double.parseDouble(p[3]);
+            double velocidad = Double.parseDouble(p[4]);
+            long   timestamp = System.currentTimeMillis();
 
-            // Calcular estadísticas con ventana deslizante
-            GestorDatos.Estadisticas est = gestorDatos.calcular(sensorId, velocidad);
+            GestorDatos.Estadisticas est =
+                    gestorDatos.calcular(userId, empresaId, lat, lon, timestamp, velocidad);
 
             if (est.completo) {
-                // Formato salida: "sensorId media max min distantzia lat lon"
-                String resultado = String.format("%s %.2f %.2f %.2f %.2f %s %s",
-                        sensorId, est.media, est.max, est.min, est.distantzia, lat, lon);
+                // Formato salida: "userId empresaId media max min distantzia lat lon timestamp"
+                String resultado = String.format("%d %d %.2f %.2f %.2f %.2f %.6f %.6f %d",
+                        est.userId, est.empresaId,
+                        est.media, est.max, est.min, est.distantzia,
+                        est.latitud, est.longitud, est.timestamp);
 
-                // Publicar al exchange fanout (va a WorkerC, WorkerP, WorkerKP)
                 getChannel().basicPublish(KafkaStreamConfig.EXCHANGE_FANOUT, "", null, resultado.getBytes());
-                System.out.println("[TaskWorker-" + workerId + "] Publicado al fanout: " + resultado);
+                System.out.println("[TaskWorker-" + workerId + "] → fanout: " + resultado);
             } else {
-                System.out.println("[TaskWorker-" + workerId + "] Acumulando datos para " + sensorId);
+                System.out.println("[TaskWorker-" + workerId + "] Acumulando datos para userId=" + userId +
+                        " (" + gestorDatos.datosVelocidad.get(userId).size() + "/" + GestorDatos.NUM_DATOS + ")");
             }
 
-            // Confirmar mensaje procesado
             getChannel().basicAck(envelope.getDeliveryTag(), false);
         }
     }
@@ -122,11 +117,7 @@ public class TaskWorker {
         System.out.println("Pulsa ENTER para parar.");
 
         TaskWorker worker = new TaskWorker(id);
-        new Thread(() -> {
-            teclado.nextLine();
-            worker.parar();
-        }).start();
-
+        new Thread(() -> { teclado.nextLine(); worker.parar(); }).start();
         worker.suscribir();
         teclado.close();
     }

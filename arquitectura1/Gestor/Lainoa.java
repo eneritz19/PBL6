@@ -4,23 +4,17 @@ import java.io.IOException;
 import java.util.Scanner;
 import java.util.concurrent.TimeoutException;
 
-import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
+import com.rabbitmq.client.AMQP;
 
 /**
- * Lainoa - Consumidor final en la nube (equivalente a la alarma del ejercicio).
+ * Lainoa - Consumidor final en la nube.
  *
- * Recibe todos los resultados clasificados desde ResultWorker
- * y los almacena/muestra (en un caso real, los guardaría en BBDD o dashboard).
- *
- * Flujo:
- *   EXCHANGE_LAINOA (fanout) → Lainoa
- *
- * Formato mensaje recibido: "sensorId GarraioaMota lat lon timestamp"
+ * Formato mensaje recibido: "userId empresaId GarraioaMota lat lon timestamp"
  */
 public class Lainoa {
 
@@ -39,16 +33,16 @@ public class Lainoa {
         try (Connection connection = factory.newConnection()) {
             Channel channel = connection.createChannel();
 
-            channel.exchangeDeclare(EXCHANGE_LAINOA, "fanout");
+            channel.exchangeDeclare(EXCHANGE_LAINOA, "fanout", true);
 
-            // Cola anónima exclusiva para esta instancia de Lainoa
+            // Cola anónima exclusiva: cada instancia de Lainoa recibe todos los mensajes
             String cola = channel.queueDeclare().getQueue();
             channel.queueBind(cola, EXCHANGE_LAINOA, "");
 
             channel.basicConsume(cola, true, new MiConsumer(channel));
 
-            System.out.println("[Lainoa] ☁ Conectada. Esperando datos de garraioa...");
-            System.out.println("─────────────────────────────────────────────");
+            System.out.println("[Lainoa] Conectada. Esperando resultados...");
+            System.out.println("──────────────────────────────────────────────────────");
 
             synchronized (this) {
                 try { wait(); } catch (InterruptedException e) { e.printStackTrace(); }
@@ -72,33 +66,22 @@ public class Lainoa {
 
             String mensaje = new String(body, "UTF-8");
 
-            // Parsear: sensorId GarraioaMota lat lon timestamp
+            // Formato: "userId empresaId GarraioaMota lat lon timestamp"
             String[] p = mensaje.split(" ");
-            if (p.length >= 5) {
-                String sensorId     = p[0];
-                String garraioaMota = p[1];
-                String lat          = p[2];
-                String lon          = p[3];
-                long   ts           = Long.parseLong(p[4]);
-
-                System.out.printf("[Lainoa] %-12s → %-12s  📍 %s, %s  🕒 %d%n",
-                        sensorId, garraioaMota, lat, lon, ts);
+            if (p.length >= 6) {
+                System.out.printf("[Lainoa] userId=%-4s empresa=%-4s %-12s  lat=%s lon=%s  ts=%s%n",
+                        p[0], p[1], p[2], p[3], p[4], p[5]);
             } else {
-                System.out.println("[Lainoa] Mensaje recibido: " + mensaje);
+                System.out.println("[Lainoa] " + mensaje);
             }
         }
     }
 
     public static void main(String[] args) {
         Scanner teclado = new Scanner(System.in);
-        System.out.println("☁ [Lainoa] Servicio de nube iniciado. Pulsa ENTER para parar.");
-
+        System.out.println("[Lainoa] Servicio iniciado. Pulsa ENTER para parar.");
         Lainoa lainoa = new Lainoa();
-        new Thread(() -> {
-            teclado.nextLine();
-            lainoa.parar();
-        }).start();
-
+        new Thread(() -> { teclado.nextLine(); lainoa.parar(); }).start();
         lainoa.suscribir();
         teclado.close();
     }
