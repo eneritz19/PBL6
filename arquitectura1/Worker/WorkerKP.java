@@ -1,4 +1,4 @@
-package garraioa;
+package arquitectura1.Worker;
 
 import java.io.IOException;
 import java.util.Scanner;
