@@ -1,0 +1,41 @@
+Aquí tienes el flujo completo de conexiones:
+
+```
+PublisherApp
+  └─ basicPublish → EXCHANGE_STREAM (direct)
+       └─ routing key "tarea" → Q: tarea
+            └─ TaskWorker (x3, basicQos=1, compiten por mensajes)
+                 └─ basicPublish → EXCHANGE_FANOUT (fanout)
+                      ├─ Q: kotxea → WorkerC
+                      │    └─ basicPublish → EXCHANGE_EMAITZA (direct)
+                      │         └─ routing key "emaitza" → Q: emaitza
+                      │
+                      ├─ Q: publikoa → WorkerP
+                      │    └─ basicPublish → EXCHANGE_EMAITZA (direct)
+                      │         └─ routing key "emaitza" → Q: emaitza
+                      │
+                      └─ Q: k_p → WorkerKP
+                           └─ basicPublish → EXCHANGE_EMAITZA (direct)
+                                └─ routing key "emaitza" → Q: emaitza
+
+Q: emaitza → ResultWorker (x3, basicQos=1, compiten por mensajes)
+  └─ basicPublish → EXCHANGE_LAINOA (fanout)
+       └─ cola anónima → Lainoa ☁
+```
+
+**Formato de mensajes en cada tramo:**
+
+```
+PublisherApp   → TaskWorker:    "sensorId lat lon velocidad"
+TaskWorker     → Workers C/P/KP:"sensorId media max min distantzia lat lon"
+WorkerC/P/KP   → ResultWorker:  "sensorId CLASIFICACION lat lon"
+ResultWorker   → Lainoa:        "sensorId GarraioaMota lat lon timestamp"
+```
+
+**Los 3 exchanges y su tipo:**
+```
+stream_garraioa  → direct   (1 publicador → 1 cola "tarea")
+fanout_garraioa  → fanout   (1 mensaje → las 3 colas a la vez)
+emaitza_garraioa → direct   (routing key "emaitza" → 1 cola compartida)
+lainoa           → fanout   (broadcast a todos los consumidores nube)
+```
