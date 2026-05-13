@@ -10,6 +10,8 @@ import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
+import pbl6.arquitectura1.Gestor.GestorDatos;
+import pbl6.arquitectura1.Publisher.KafkaStreamConfig;
 
 /**
  * TaskWorker - Consumidor de Q:tarea (Thread Pool 1/2/3).

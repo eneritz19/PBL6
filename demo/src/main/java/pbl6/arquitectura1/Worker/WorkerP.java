@@ -10,7 +10,7 @@ import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
 import com.rabbitmq.client.AMQP;
-
+import pbl6.arquitectura1.Publisher.KafkaStreamConfig;
 /**
  * WorkerP - Clasificador: Bus / Tren / Ez P.
  *

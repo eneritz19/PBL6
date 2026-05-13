@@ -15,10 +15,10 @@ import java.util.Map;
  */
 public class GestorDatos {
 
-    static final int NUM_DATOS = 5;
+    public static final int NUM_DATOS = 5;
 
     // Clave: userId
-    Map<Integer, List<Double>> datosVelocidad;
+    public Map<Integer, List<Double>> datosVelocidad;
 
     public GestorDatos() {
         datosVelocidad = new HashMap<>();

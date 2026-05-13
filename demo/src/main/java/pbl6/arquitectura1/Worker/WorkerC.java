@@ -10,6 +10,7 @@ import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
+import pbl6.arquitectura1.Publisher.KafkaStreamConfig;
 
 /**
  * WorkerC - Clasificador: Kotxea / Ez kotxe.
