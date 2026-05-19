@@ -14,15 +14,15 @@ import com.rabbitmq.client.ConnectionFactory;
  *
  * Formato mensaje: "userId empresaId lat lon velocidad"
  *
- * userId    → identificador del usuario/sensor (int)
+ * userId → identificador del usuario/sensor (int)
  * empresaId → identificador de empresa (int, fijo por instancia)
- * lat/lon   → coordenadas simuladas (zona Mondragón)
+ * lat/lon → coordenadas simuladas (zona Mondragón)
  * velocidad → km/h aleatorio entre 0 y 120
  */
 public class PublisherApp {
 
     static final String EXCHANGE_STREAM = "stream_garraioa";
-    static final int    INTERVALO_MS    = 2000; // 2s para el simulacro (en producción: 60000)
+    static final int INTERVALO_MS = 2000; // 2s para el simulacro (en producción: 60000)
 
     ConnectionFactory factory;
     Channel channel;
@@ -31,9 +31,9 @@ public class PublisherApp {
     HiloPublicador hiloPublicador;
 
     public PublisherApp(int userId, int empresaId) {
-        this.userId    = userId;
+        this.userId = userId;
         this.empresaId = empresaId;
-        factory        = new ConnectionFactory();
+        factory = new ConnectionFactory();
         factory.setHost("localhost");
         factory.setUsername("guest");
         factory.setPassword("guest");
@@ -48,7 +48,11 @@ public class PublisherApp {
             hiloPublicador.start();
 
             synchronized (this) {
-                try { wait(); } catch (InterruptedException e) { e.printStackTrace(); }
+                try {
+                    wait();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
             }
             channel.close();
 
@@ -58,8 +62,11 @@ public class PublisherApp {
     }
 
     public void parar() {
-        if (hiloPublicador != null) hiloPublicador.interrupt();
-        synchronized (this) { notify(); }
+        if (hiloPublicador != null)
+            hiloPublicador.interrupt();
+        synchronized (this) {
+            notify();
+        }
     }
 
     public class HiloPublicador extends Thread {
@@ -69,12 +76,12 @@ public class PublisherApp {
             try {
                 while (!isInterrupted()) {
                     // Zona Mondragón aprox.
-                    double lat      = 43.060 + rnd.nextDouble() * 0.05;
-                    double lon      = -2.490 + rnd.nextDouble() * 0.05;
+                    double lat = 43.060 + rnd.nextDouble() * 0.05;
+                    double lon = -2.490 + rnd.nextDouble() * 0.05;
                     double velocidad = rnd.nextDouble() * 120.0; // 0-120 km/h
 
                     // Formato: "userId empresaId lat lon velocidad"
-                    String mensaje = String.format("%d %d %.6f %.6f %.2f",
+                    String mensaje = String.format(java.util.Locale.US, "%d %d %.6f %.6f %.2f",
                             userId, empresaId, lat, lon, velocidad);
 
                     channel.basicPublish(EXCHANGE_STREAM, "tarea", null, mensaje.getBytes());
@@ -91,13 +98,16 @@ public class PublisherApp {
     public static void main(String[] args) {
         Scanner teclado = new Scanner(System.in);
         System.out.print("userId (int): ");
-        int userId    = Integer.parseInt(teclado.nextLine().trim());
+        int userId = Integer.parseInt(teclado.nextLine().trim());
         System.out.print("empresaId (int): ");
         int empresaId = Integer.parseInt(teclado.nextLine().trim());
         System.out.println("Publicando cada " + INTERVALO_MS + "ms. Pulsa ENTER para parar.");
 
         PublisherApp publisher = new PublisherApp(userId, empresaId);
-        new Thread(() -> { teclado.nextLine(); publisher.parar(); }).start();
+        new Thread(() -> {
+            teclado.nextLine();
+            publisher.parar();
+        }).start();
         publisher.iniciar();
         teclado.close();
     }

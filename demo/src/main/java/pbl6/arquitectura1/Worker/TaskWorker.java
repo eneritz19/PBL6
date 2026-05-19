@@ -49,7 +49,8 @@ public class TaskWorker {
                               KafkaStreamConfig.QUEUE_TAREA);
 
             channel.basicQos(1); // fair dispatch: un mensaje a la vez
-            channel.basicConsume(KafkaStreamConfig.QUEUE_TAREA, false, new MiConsumer(channel));
+            MiConsumer consumer = new MiConsumer(channel);
+            channel.basicConsume(KafkaStreamConfig.QUEUE_TAREA, false, consumer);
 
             System.out.println("[TaskWorker-" + workerId + "] Esperando tareas en Q:tarea...");
 
@@ -96,7 +97,7 @@ public class TaskWorker {
 
             if (est.completo) {
                 // Formato salida: "userId empresaId media max min distantzia lat lon timestamp"
-                String resultado = String.format("%d %d %.2f %.2f %.2f %.2f %.6f %.6f %d",
+                String resultado = String.format(java.util.Locale.US,"%d %d %.2f %.2f %.2f %.2f %.6f %.6f %d",
                         est.userId, est.empresaId,
                         est.media, est.max, est.min, est.distantzia,
                         est.latitud, est.longitud, est.timestamp);
